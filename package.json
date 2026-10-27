@@ -1,0 +1,11 @@
+{
+  "name": "naaz-makeup-studio-apk",
+  "version": "1.0.0",
+  "description": "Naaz Makeup Studio - Native Mobile APK (Bookings, Hisab, Services, Customers & Jewellery)",
+  "private": true,
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/core": "^6.0.0"
+  }
+}

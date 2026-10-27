@@ -1,0 +1,6 @@
+{
+  "appId": "com.naazmakeupstudio.app",
+  "appName": "Naaz Makeup Studio",
+  "webDir": "www",
+  "bundledWebRuntime": false
+}

@@ -1,0 +1,309 @@
+name: Build Naaz Makeup Studio Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Prepare Web Assets & Install Capacitor
+        run: |
+          mkdir -p www
+          cp index.html www/index.html
+          cp parlour_booking_hisab.html www/parlour_booking_hisab.html || true
+          cp styles.css www/styles.css || true
+          cp app.js www/app.js || true
+          cp sw.js www/sw.js || true
+          cp manifest.json www/manifest.json || true
+          cp logo.png www/logo.png || true
+          cp banner.jpg www/banner.jpg || true
+          if [ ! -f package.json ]; then
+            npm init -y
+          fi
+          npm install @capacitor/core@^6.0.0 @capacitor/cli@^6.0.0 @capacitor/android@^6.0.0
+          if [ ! -f capacitor.config.json ]; then
+            npx cap init "Naaz Makeup Studio" "com.naazmakeupstudio.app" --web-dir www
+          fi
+
+      - name: Add Android Platform & Sync Assets
+        run: |
+          if [ ! -f android/gradlew ]; then
+            rm -rf android
+            npx cap add android
+          fi
+          npx cap sync android
+
+      - name: Configure Native JSON/CSV File Download Bridge & APK Launcher Icons
+        run: |
+          python3 -m pip install --upgrade Pillow || pip3 install Pillow
+          python3 - << 'PYEOF'
+          import os, re, base64
+          from io import BytesIO
+          from PIL import Image, ImageDraw
+
+          # 1. Write MainActivity.java with NaazAndroid native file download & share bridge
+          java_dir = "android/app/src/main/java/com/naazmakeupstudio/app"
+          os.makedirs(java_dir, exist_ok=True)
+          main_activity_code = '''package com.naazmakeupstudio.app;
+
+          import android.content.ContentResolver;
+          import android.content.ContentValues;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.provider.MediaStore;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebView;
+          import android.widget.Toast;
+
+          import com.getcapacitor.BridgeActivity;
+
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStream;
+          import java.nio.charset.StandardCharsets;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  try {
+                      if (this.getBridge() != null && this.getBridge().getWebView() != null) {
+                          WebView webView = this.getBridge().getWebView();
+                          webView.addJavascriptInterface(new NaazAndroidBridge(), "NaazAndroid");
+                      }
+                  } catch (Exception ignored) {}
+              }
+
+              public class NaazAndroidBridge {
+                  @JavascriptInterface
+                  public String saveFileToDownloads(String filename, String content, String mimeType) {
+                      try {
+                          String safeMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : "application/json";
+                          byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                              ContentValues values = new ContentValues();
+                              values.put(MediaStore.MediaColumns.DISPLAY_NAME, filename);
+                              values.put(MediaStore.MediaColumns.MIME_TYPE, safeMime);
+                              values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+
+                              ContentResolver resolver = getContentResolver();
+                              Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                              if (uri != null) {
+                                  try (OutputStream out = resolver.openOutputStream(uri)) {
+                                      if (out != null) {
+                                          out.write(bytes);
+                                          out.flush();
+                                          runOnUiThread(() -> Toast.makeText(
+                                              MainActivity.this,
+                                              "Saved in Downloads: " + filename,
+                                              Toast.LENGTH_LONG
+                                          ).show());
+                                          return "OK:" + uri.toString();
+                                      }
+                                  }
+                              }
+                          }
+
+                          File dlDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                          if (dlDir == null || (!dlDir.exists() && !dlDir.mkdirs())) {
+                              dlDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                          }
+                          if (dlDir != null) {
+                              if (!dlDir.exists()) dlDir.mkdirs();
+                              File outFile = new File(dlDir, filename);
+                              try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                                  fos.write(bytes);
+                                  fos.flush();
+                                  final String savedPath = outFile.getAbsolutePath();
+                                  runOnUiThread(() -> Toast.makeText(
+                                      MainActivity.this,
+                                      "Saved: " + savedPath,
+                                      Toast.LENGTH_LONG
+                                  ).show());
+                                  return "OK:" + savedPath;
+                              }
+                          }
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                      return "ERR:Failed";
+                  }
+
+                  @JavascriptInterface
+                  public String saveAndShareFile(String filename, String content, String mimeType) {
+                      try {
+                          String safeMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : "application/json";
+                          byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                              ContentValues values = new ContentValues();
+                              values.put(MediaStore.MediaColumns.DISPLAY_NAME, filename);
+                              values.put(MediaStore.MediaColumns.MIME_TYPE, safeMime);
+                              values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+
+                              ContentResolver resolver = getContentResolver();
+                              Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                              if (uri != null) {
+                                  try (OutputStream out = resolver.openOutputStream(uri)) {
+                                      if (out != null) {
+                                          out.write(bytes);
+                                          out.flush();
+                                      }
+                                  }
+                                  Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                                  shareIntent.setType(safeMime);
+                                  shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
+                                  shareIntent.putExtra(Intent.EXTRA_SUBJECT, filename);
+                                  shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                                  Intent chooser = Intent.createChooser(shareIntent, "Save or Share " + filename);
+                                  chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                  startActivity(chooser);
+                                  return "OK:" + uri.toString();
+                              }
+                          }
+
+                          Intent sendIntent = new Intent(Intent.ACTION_SEND);
+                          sendIntent.setType("text/plain");
+                          sendIntent.putExtra(Intent.EXTRA_SUBJECT, filename);
+                          sendIntent.putExtra(Intent.EXTRA_TEXT, content);
+                          Intent chooser = Intent.createChooser(sendIntent, "Export " + filename);
+                          chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          startActivity(chooser);
+                          return "OK:TEXT_SHARE";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+              }
+          }
+          '''
+          with open(os.path.join(java_dir, "MainActivity.java"), "w", encoding="utf-8") as jf:
+              jf.write("\n".join(line[10:] if line.startswith("          ") else line for line in main_activity_code.splitlines()).strip() + "\n")
+          print("Configured MainActivity.java with NaazAndroid file bridge")
+
+          # 2. Load logo.png if uploaded, OR extract embedded base64 logo directly from index.html
+          logo_img = None
+          if os.path.exists("logo.png"):
+              try:
+                  logo_img = Image.open("logo.png").convert("RGBA")
+                  print("Loaded logo.png from repository root")
+              except Exception as e:
+                  print("Could not open logo.png:", e)
+
+          if logo_img is None and os.path.exists("index.html"):
+              html_text = open("index.html", "r", encoding="utf-8", errors="ignore").read()
+              m = re.search(r'data:image/(?:jpeg|png);base64,([A-Za-z0-9+/=]+)', html_text)
+              if m:
+                  raw_bytes = base64.b64decode(m.group(1))
+                  logo_img = Image.open(BytesIO(raw_bytes)).convert("RGBA")
+                  logo_img.save("logo.png", format="PNG")
+                  os.makedirs("www", exist_ok=True)
+                  logo_img.save("www/logo.png", format="PNG")
+                  print("Extracted embedded logo from index.html and saved to logo.png")
+
+          if logo_img is None:
+              raise RuntimeError("No logo found in logo.png or index.html!")
+
+          res_dir = "android/app/src/main/res"
+
+          for stale_vec in [
+              os.path.join(res_dir, "drawable", "ic_launcher_background.xml"),
+              os.path.join(res_dir, "drawable", "ic_launcher_foreground.xml"),
+              os.path.join(res_dir, "drawable-v24", "ic_launcher_foreground.xml"),
+          ]:
+              if os.path.exists(stale_vec):
+                  os.remove(stale_vec)
+
+          def make_round_icon(img_rgba, size):
+              resized = img_rgba.resize((size, size), Image.Resampling.LANCZOS)
+              mask = Image.new("L", (size, size), 0)
+              draw = ImageDraw.Draw(mask)
+              draw.ellipse((0, 0, size - 1, size - 1), fill=255)
+              out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+              out.paste(resized, (0, 0), mask)
+              return out
+
+          def make_adaptive_foreground(img_rgba, fg_size):
+              canvas = Image.new("RGBA", (fg_size, fg_size), (13, 11, 8, 255))
+              inner = int(round(fg_size * 0.70))
+              resized = img_rgba.resize((inner, inner), Image.Resampling.LANCZOS)
+              offset = (fg_size - inner) // 2
+              canvas.paste(resized, (offset, offset), resized)
+              return canvas
+
+          mipmaps = {
+              "mipmap-mdpi":    (48, 108),
+              "mipmap-hdpi":    (72, 162),
+              "mipmap-xhdpi":   (96, 216),
+              "mipmap-xxhdpi":  (144, 324),
+              "mipmap-xxxhdpi": (192, 432),
+          }
+
+          for folder, (icon_sz, fg_sz) in mipmaps.items():
+              target_dir = os.path.join(res_dir, folder)
+              os.makedirs(target_dir, exist_ok=True)
+              sq = logo_img.resize((icon_sz, icon_sz), Image.Resampling.LANCZOS)
+              sq.save(os.path.join(target_dir, "ic_launcher.png"), format="PNG")
+              rd = make_round_icon(logo_img, icon_sz)
+              rd.save(os.path.join(target_dir, "ic_launcher_round.png"), format="PNG")
+              fg = make_adaptive_foreground(logo_img, fg_sz)
+              fg.save(os.path.join(target_dir, "ic_launcher_foreground.png"), format="PNG")
+
+          values_dir = os.path.join(res_dir, "values")
+          os.makedirs(values_dir, exist_ok=True)
+          bg_xml = '''<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#0D0B08</color>
+          </resources>
+          '''
+          with open(os.path.join(values_dir, "ic_launcher_background.xml"), "w", encoding="utf-8") as f:
+              f.write(bg_xml.strip() + "\n")
+
+          anydpi_dir = os.path.join(res_dir, "mipmap-anydpi-v26")
+          os.makedirs(anydpi_dir, exist_ok=True)
+          adaptive_xml = '''<?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+          </adaptive-icon>
+          '''
+          for xml_name in ["ic_launcher.xml", "ic_launcher_round.xml"]:
+              with open(os.path.join(anydpi_dir, xml_name), "w", encoding="utf-8") as f:
+                  f.write(adaptive_xml.strip() + "\n")
+
+          print("Successfully generated all Android APK launcher icons!")
+          PYEOF
+
+      - name: Build Debug APK with Gradle
+        working-directory: ./android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload Built Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Naaz-Makeup-Studio-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
